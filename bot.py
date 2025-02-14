@@ -42,9 +42,6 @@ async def create_db_pool():
         return None
 
 
-
-
-
 async def send_reminders():
     async with db_pool.acquire() as conn:
         schedule = await conn.fetchrow("SELECT * FROM schedule")
@@ -71,7 +68,8 @@ async def send_reminders():
 
         for user in users:
             user_tz = pytz.timezone(user["timezone"]) if user["timezone"] else pytz.utc
-            user_time = lesson_datetime_utc.astimezone(user_tz).strftime("%H:%M")  # Конвертируем в локальное время пользователя
+            user_time = lesson_datetime_utc.astimezone(user_tz).strftime(
+                "%H:%M")  # Конвертируем в локальное время пользователя
 
             if now_utc.strftime("%a").lower() in lesson_days:
                 if reminder_1h_utc <= now_utc < lesson_datetime_utc:
@@ -83,7 +81,6 @@ async def send_reminders():
                                         f"📢 Не забудьте! Завтра в {user_time} (по вашему времени) начнётся занятие по курсу изучения Библии.")
 
 
-
 async def send_reminder(users, text):
     """Отправляет напоминание всем пользователям."""
     for user in users:
@@ -91,7 +88,6 @@ async def send_reminder(users, text):
             await bot.send_message(user["user_id"], text)
         except Exception as e:
             logging.warning(f"Ошибка отправки напоминания {user['user_id']}: {e}")
-
 
 
 async def notify_schedule_update():
@@ -102,7 +98,7 @@ async def notify_schedule_update():
             try:
                 await bot.send_message(user["user_id"],
                                        "📢 Внимание! Расписание занятий изменилось. Проверьте новое расписание в боте. \n "
-                                       "по кнопке 'информация о курсе'")
+                                       "по кнопке 'Расписание'")
             except Exception as e:
                 logging.warning(f"Ошибка отправки уведомления {user['user_id']}: {e}")
 
@@ -114,10 +110,9 @@ scheduler = AsyncIOScheduler()
 # Определение состояний
 class Registration(StatesGroup):
     full_name = State()
-    city = State()
+    country = State()
     age = State()
     phone = State()
-    telegram = State()
 
 
 class EditSchedule(StatesGroup):
@@ -136,20 +131,31 @@ class SearchUser(StatesGroup):
 
 
 # Клавиатуры
+unregistered_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="ℹ️ Информация о курсе")],
+        [KeyboardButton(text="📝 Зарегистрироваться")]
+    ],
+    resize_keyboard=True
+)
+question_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Курс бесплатный?")],
+        [KeyboardButton(text="Можно ли смотреть запись урока?")],
+        [KeyboardButton(text="Информация об организации")],
+        [KeyboardButton(text="Назад")]
+    ],
+    resize_keyboard=True
+)
 after_registration_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="ℹ️ Информация о курсе")],
+        [KeyboardButton(text="📅 Расписание")],
         [KeyboardButton(text="📞 Связь с оператором")]
     ],
     resize_keyboard=True
 )
-geo_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="📍 Отправить местоположение", request_location=True)],
-        [KeyboardButton(text="🚫 Не отправлять")]
-    ],
-    resize_keyboard=True
-)
+
 admin_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✏️ Редактировать расписание")],
@@ -167,19 +173,19 @@ async def add_test_users(message: types.Message):
         return
 
     test_users = [
-        (101, 'Иван Иванов', 'Москва', 25, '+79161234567', '@port_manager_mmvbrts'),
-        (102, 'Мария Петрова', 'Санкт-Петербург', 30, '+79261234568', '@maria_pet'),
-        (103, 'Александр Сидоров', 'Новосибирск', 27, '+79371234569', '@alex_s'),
-        (104, 'Ольга Смирнова', 'Казань', 22, '+79481234560', '@olga_smir'),
-        (105, 'Дмитрий Кузнецов', 'Екатеринбург', 35, '+79591234561', '@dmitry_k'),
+        (101, 'Иван Иванов', 'Москва', 25, '+79161234567'),
+        (102, 'Мария Петрова', 'Санкт-Петербург', 30, '+79261234568'),
+        (103, 'Александр Сидоров', 'Новосибирск', 27, '+79371234569'),
+        (104, 'Ольга Смирнова', 'Казань', 22, '+79481234560'),
+        (105, 'Дмитрий Кузнецов', 'Екатеринбург', 35, '+79591234561'),
     ]
 
     async with db_pool.acquire() as conn:
         for user in test_users:
             user_id = int(user[0])  # Явно преобразуем user_id в число
             await conn.execute(
-                "INSERT INTO users (user_id, full_name, city, age, phone, telegram) "
-                "VALUES ($1, $2, $3, $4, $5, $6) "
+                "INSERT INTO users (user_id, full_name, country, age, phone) "
+                "VALUES ($1, $2, $3, $4, $5) "
                 "ON CONFLICT (user_id) DO NOTHING",
                 user_id, *user[1:]
             )
@@ -199,7 +205,7 @@ async def clear_database(message: types.Message):
 
 
 @router.message(F.text == "/start")
-async def start_command(message: types.Message, state: FSMContext):
+async def start_command(message: types.Message):
     if message.from_user.id == ADMIN_ID:
         await message.answer("Добро пожаловать, Админ!", reply_markup=admin_keyboard)
         return
@@ -208,68 +214,136 @@ async def start_command(message: types.Message, state: FSMContext):
         user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", message.from_user.id)
 
     if user:
-        await message.answer("Вы уже зарегистрированы!", reply_markup=after_registration_keyboard)
+        await message.answer(
+            "Добро пожаловать обратно! Чем могу помочь?",
+            reply_markup=after_registration_keyboard
+        )
     else:
         await message.answer(
             "Благословенного дня! 🙏\n"
-            "Меня зовут Роман, я помогу вам зарегистрироваться на курс изучения Библии и получить информацию о занятиях.\n"
+            "Меня зовут Роман, и я помогу вам зарегистрироваться на курс изучения Библии или получить информацию о занятиях.\n"
+            "Вы хотите зарегистрироваться или узнать подробнее о курсе?",
+            reply_markup=unregistered_keyboard
         )
-        await message.answer("Введите ваше ФИО:")
-        await state.set_state(Registration.full_name)
+
+
+# -----------------------------------------------------------------------------------------
+@router.message(F.text == "Курс бесплатный?")
+async def quit_command(message: types.Message):
+    await message.answer("Да, курс абсолютно бесплатный!")
+
+
+@router.message(F.text == "Можно ли смотреть запись урока?")
+async def quit_command(message: types.Message):
+    await message.answer("Да, для этого свяжитесь с оператором( Доступен после регистрации )")
+
+
+@router.message(F.text == "Информация об организации")
+async def quit_command(message: types.Message):
+    with open("question_3.txt", "r", encoding="UTF8") as f:
+        quit_text = f.read()
+    await message.answer(quit_text)
+
+@router.message(F.text == "Назад")
+async def quit_command(message: types.Message):
+    async with db_pool.acquire() as conn:
+        user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", message.from_user.id)
+
+    if user:
+        # Если пользователь зарегистрирован, возвращаем клавиатуру с расписанием и оператором
+        keyboard = after_registration_keyboard
+        await message.answer("Если у вас ещё остались вопросы, свяжитесь с оператором", reply_markup=keyboard)
+    else:
+        # Если пользователь НЕ зарегистрирован, показываем только информацию о курсе и регистрацию
+        keyboard = unregistered_keyboard
+        await message.answer("Хотите зарегистрироваться на курс?", reply_markup=keyboard)
+
+
+
+
+# -----------------------------------------------------------------------------------------
+@router.message(F.text == "📝 Зарегистрироваться")
+async def start_registration(message: types.Message, state: FSMContext):
+    await message.answer("Для регистрации на курс введите, пожалуйста, ваше ФИО:",
+                         reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(Registration.full_name)
 
 
 @router.message(Registration.full_name)
 async def process_full_name(message: types.Message, state: FSMContext):
     await state.update_data(full_name=message.text)
-    await message.answer("Введите ваш город или страну:")
-    await state.set_state(Registration.city)
+    await message.answer(
+        "Спасибо! Напишите, пожалуйста, вашу страну, чтобы мы могли правильно определить время занятий.",
+        reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(Registration.country)
 
 
-@router.message(Registration.city)
+@router.message(Registration.country)
 async def process_city(message: types.Message, state: FSMContext):
-    await state.update_data(city=message.text)
-    await message.answer("Введите ваш возраст:")
+    await state.update_data(country=message.text)
+    await message.answer("🙏☺️ Осталось всего пару вопросов, и вы будете зарегистрированы.\n"
+                         "Напишите, пожалуйста, вашу дату рождения формат: ДД:ММ:ГГ (пример: 01.02.1970).",
+                         reply_markup=types.ReplyKeyboardRemove())
     await state.set_state(Registration.age)
 
 
 @router.message(Registration.age)
 async def process_age(message: types.Message, state: FSMContext):
-    if not message.text.isdigit():
-        await message.answer("Возраст должен быть числом.")
+    # Проверяем формат даты
+    if not re.match(r"^\d{2}\.\d{2}\.\d{4}$", message.text):
+        await message.answer("Ошибка! Введите дату рождения в формате ДД.ММ.ГГГГ (пример: 01.02.1970).")
         return
 
-    await state.update_data(age=int(message.text))
-    await message.answer("Введите ваш номер телефона:")
+    try:
+        birth_date = datetime.strptime(message.text, "%d.%m.%Y")
+        today = datetime.today()
+
+        # Проверяем, что дата рождения не в будущем
+        if birth_date > today:
+            await message.answer(
+                "Ошибка! Дата рождения не может быть в будущем.\nВведите корректную дату (пример: 01.02.1970).")
+            return
+
+        # Рассчитываем возраст
+        age = today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
+
+        # Проверяем реалистичность возраста (10–120 лет)
+        if age < 10 or age > 120:
+            await message.answer(
+                "Ошибка! Возраст должен быть от 10 до 120 лет.\nВведите корректную дату рождения (пример: 01.02.1970).")
+            return
+
+    except ValueError:
+        await message.answer("Ошибка! Введите дату рождения в формате ДД.ММ.ГГГГ (пример: 01.02.1970).")
+        return
+
+    # Сохраняем дату рождения в состоянии
+    await state.update_data(age=age)
+
+    # Спрашиваем номер телефона и убираем клавиатуру
+    await message.answer("Замечательно! 😇 Последний шаг:\n"
+                         "Чтобы с вами мог связаться куратор, укажите, пожалуйста, ваш контактный номер телефона.\n"
+                         "Пример: +7 705 765 15 99", reply_markup=types.ReplyKeyboardRemove())
+
     await state.set_state(Registration.phone)
 
 
 @router.message(Registration.phone)
 async def process_phone(message: types.Message, state: FSMContext):
     await state.update_data(phone=message.text)
-    await message.answer("Введите ссылку на ваш Telegram:")
-    await state.set_state(Registration.telegram)
-
-
-@router.message(Registration.telegram)
-async def process_telegram(message: types.Message, state: FSMContext):
-    await state.update_data(telegram=message.text)
     data = await state.get_data()
 
     async with db_pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO users (user_id, full_name, city, age, phone, telegram, timezone)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-        """, message.from_user.id, data['full_name'], data['city'], data['age'], data['phone'], data['telegram'], None)  # Часовой пояс пока None
+                INSERT INTO users (user_id, full_name, country, age, phone) 
+                VALUES ($1, $2, $3, $4, $5)
+            """, message.from_user.id, data['full_name'], data['country'], data['age'], data['phone'])
 
     await message.answer(
-        "Спасибо за регистрацию! 🎉\n"
-        "Теперь отправьте ваше местоположение, чтобы мы могли правильно определить ваше время занятий.\n\n"
-        "Если не хотите отправлять местоположение, нажмите кнопку '🚫 Не отправлять'.",
-        reply_markup=geo_keyboard
+        "Благодарю за предоставленную информацию! Скоро мы отправим вам расписание курса. 😇",
+        reply_markup=after_registration_keyboard
     )
-
     await state.clear()
-
 
 
 @router.message(F.text == "📢 Массовая рассылка")
@@ -339,40 +413,39 @@ async def start_search(message: types.Message, state: FSMContext):
     await state.set_state(SearchUser.query)
 
 
+# ------------------------------------------------------------------------------------------------------------
 @router.message(F.text == "ℹ️ Информация о курсе")
 async def course_info(message: types.Message):
     async with db_pool.acquire() as conn:
+        user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", message.from_user.id)
+
+    with open("question.txt", "r", encoding="utf-8") as f:
+        question_text = f.read()
+
+    await message.answer(question_text, reply_markup=question_keyboard)  # ❗️ Всегда отправляем `question_keyboard`
+
+
+# ------------------------------------------------------------------------------------------------------------
+@router.message(F.text == "📅 Расписание")
+async def show_schedule(message: types.Message):
+    async with db_pool.acquire() as conn:
+        user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", message.from_user.id)
         schedule = await conn.fetchrow("SELECT * FROM schedule")
 
+    if not user:
+        await message.answer("Вы ещё не зарегистрированы. Пожалуйста, сначала зарегистрируйтесь!",
+                             reply_markup=unregistered_keyboard)
+        return
+
     if schedule:
-        info_text = (f"📅 Расписание занятий:\n{schedule['text']}\n\n"
-                     f"📅 Дни недели: {schedule['days']}\n"
-                     f"⏰ Время: {schedule['time']} ({schedule['timezone']})")
+        info_text = (
+            f"📅 **Расписание занятий:**\n{schedule['text']}\n\n"
+            f"📆 **Дни недели:** {schedule['days']}\n"
+            f"⏰ **Время:** {schedule['time']} ({schedule['timezone']})"
+        )
         await message.answer(info_text)
-        await message.answer(open("FAQ.txt", "rb").read())
     else:
         await message.answer("❌ Расписание ещё не добавлено.")
-
-
-@router.message(F.location)
-async def process_location(message: types.Message):
-    """Сохраняет часовой пояс пользователя по геолокации."""
-    latitude = message.location.latitude
-    longitude = message.location.longitude
-
-    timezone = tf.timezone_at(lat=latitude, lng=longitude)
-
-    if timezone:
-        async with db_pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET timezone = $1 WHERE user_id = $2",
-                timezone,
-                message.from_user.id
-            )
-        await message.answer(f"✅ Ваш часовой пояс установлен: {timezone}", reply_markup=after_registration_keyboard)
-    else:
-        await message.answer("❌ Не удалось определить часовой пояс. Используйте стандартный (UTC+3).", reply_markup=after_registration_keyboard)
-
 
 
 @router.message(F.text == "📞 Связь с оператором")
@@ -398,13 +471,13 @@ async def show_students(message: types.Message):
         return
 
     async with db_pool.acquire() as conn:
-        students = await conn.fetch("SELECT full_name, city, age, phone, telegram FROM users")
+        students = await conn.fetch("SELECT full_name, country, age, phone FROM users")
 
     if not students:
         await message.answer("В базе данных пока нет зарегистрированных учеников.")
         return
 
-    df = pd.DataFrame(students, columns=["ФИО", "Город", "Возраст", "Телефон", "Telegram"])
+    df = pd.DataFrame(students, columns=["ФИО", "Страна", "Д.Рождения", "Телефон"])
 
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -421,16 +494,15 @@ async def process_search(message: types.Message, state: FSMContext):
         users = await conn.fetch("""
             SELECT * FROM users 
             WHERE LOWER(full_name) LIKE '%' || $1 || '%' 
-            OR LOWER(city) LIKE '%' || $1 || '%'
+            OR LOWER(country) LIKE '%' || $1 || '%'
         """, query)
-
 
         if not users:
             await message.answer("❌ Пользователи не найдены.")
         else:
             response = "📋 **Результаты поиска:**\n"
             for user in users:
-                response += f"👤 {user['full_name']}, 🏙 {user['city']}, {user['age']} возраст\n📞 {user['phone']}, 📨 {user['telegram']}\n\n"
+                response += f"👤 {user['full_name']}, 🏙 {user['country']}, {user['age']} возраст\n📞 {user['phone']}\n\n"
             await message.answer(response)
 
 

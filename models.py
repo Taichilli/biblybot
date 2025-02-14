@@ -13,10 +13,9 @@ async def create_tables():
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
             full_name TEXT NOT NULL,
-            city TEXT NOT NULL,
+            country TEXT NOT NULL,
             age INTEGER NOT NULL,
             phone TEXT,
-            telegram TEXT,
             timezone VARCHAR DEFAULT 'UTC',
             registration_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             
